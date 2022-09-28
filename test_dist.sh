@@ -37,7 +37,7 @@ HOSTFILE=${HOSTFILE:-./hostfile}
 
 BATCH_SIZE=3264
 
-python -m intel_extension_for_pytorch.cpu.launch --distributed --nnodes ${NNODES} --hostfile ${HOSTFILE} train_test.py -a $ARGS --epochs 1 --warmup-epochs 2  --ipex -j 0 -b $BATCH_SIZE --seed 2020 \
+python -m intel_extension_for_pytorch.cpu.launch --distributed --nnodes ${NNODES} --hostfile ${HOSTFILE} train_oneccl.py -a $ARGS --epochs 1 --warmup-epochs 2  --ipex -j 0 -b $BATCH_SIZE --seed 2020 \
         --dist-backend=ccl --base-op=LARS --base-lr 10.5 --weight-decay 0.00005 2>&1 | tee log_$3.log
 
 sleep 5
