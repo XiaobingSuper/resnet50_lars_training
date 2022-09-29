@@ -15,7 +15,7 @@ Follow [link](https://github.com/IntelAI/models/blob/master/docs/general/pytorch
 
 ### Model Specific Setup
 
-* Set Jemalloc Preload for better performance
+* Set TCmalloc Preload for better performance
 
 The tcmalloc should be built from the [General setup](#general-setup) section.
 
@@ -31,12 +31,6 @@ IOMP should be installed in your conda env from the [General setup](#general-set
     export LD_PRELOAD=path/lib/libiomp5.so:$LD_PRELOAD
 ```
 
-* Set ENV to use AMX if you are using SPR
-
-```bash
-    export DNNL_MAX_CPU_ISA=AVX512_CORE_AMX
-```
-
 * Set ENV to use multi-node distributed training (no need for single-node multi-sockets)
 
   In this case, we use data-parallel distributed training and every rank will hold same model replica. The NNODES is the number of ip in the HOSTFILE. To use multi-nodes distributed training you should firstly setup the passwordless login (you can refer to [link](https://linuxize.com/post/how-to-setup-passwordless-ssh-login/)) between these nodes. We only test ```8``` ranks case, so if your each node has two sockets, please set the node number to ```4```, if your one node only has one socket,  set the node number to ```8```. 
@@ -47,7 +41,7 @@ IOMP should be installed in your conda env from the [General setup](#general-set
 ```
 * The run the model
 ```bash
-    bash test_dist.sh resnet50 your_date bf16
+    bash test_dist.sh resnet50 DATASET_DIR bf16
 ```
 
 ## Datasets
