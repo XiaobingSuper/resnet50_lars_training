@@ -23,7 +23,8 @@ import torchvision.datasets as datasets
 import torchvision.models as models
 from torch.utils import ThroughputBenchmark
 
-import oneccl_bindings_for_pytorch
+
+#import oneccl_bindings_for_pytorch
 
 from lars import *
 from utils import *
@@ -100,38 +101,42 @@ parser.add_argument('--zero-init-residual', action='store_true', default=False,
                     help='Initialize scale params in BN3 of a residual block to zeros instead ones. '
                          'Improves accuracy by 0.2~0.3 percent according to https://arxiv.org/abs/1706.02677'
                          'Used by Nvidia, but not part of MLPerf reference ')                                                                                                    
+parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
+                            help='evaluate model on validation set')
+parser.add_argument('--distributed-training', action='store_true',
+                            help="doing distributed training")
 
 best_acc1 = 0
 
 def main():
     args = parser.parse_args()
     print(args)
-    
-    # CCL related 			
-    '''
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '29500'
-    os.environ['RANK'] = str(os.environ.get('PMI_RANK', 0))
-    os.environ['WORLD_SIZE'] = str(os.environ.get('PMI_SIZE', 1))
-    '''
-    os.environ['RANK'] = str(os.environ.get('PMI_RANK', args.rank))
-   
-    args.rank = int(os.environ['RANK'])
-
-    #os.environ['WORLD_SIZE'] = str(os.environ.get('PMI_SIZE', args.world_size))
-    os.environ['WORLD_SIZE'] = str(os.environ.get('PMI_SIZE', 1))
-    
-    if not 'MASTER_ADDR' in os.environ:
+    if args.distributed_training:
+        # CCL related 			
+        '''
         os.environ['MASTER_ADDR'] = '127.0.0.1'
-    #os.environ['MASTER_ADDR'] = '192.168.210.18'
-    os.environ['MASTER_PORT'] = '29500'
-    '''
-    if args.dist_url == "env://" and args.rank == -1:
-        args.rank = int(os.environ["RANK"])
-    '''
-    if args.dist_url == "env://" and args.world_size == -1:
-        args.world_size = int(os.environ["WORLD_SIZE"])
-        print("World size: ", args.world_size)
+        os.environ['MASTER_PORT'] = '29500'
+        os.environ['RANK'] = str(os.environ.get('PMI_RANK', 0))
+        os.environ['WORLD_SIZE'] = str(os.environ.get('PMI_SIZE', 1))
+        '''
+        os.environ['RANK'] = str(os.environ.get('PMI_RANK', args.rank))
+   
+        args.rank = int(os.environ['RANK'])
+
+        #os.environ['WORLD_SIZE'] = str(os.environ.get('PMI_SIZE', args.world_size))
+        os.environ['WORLD_SIZE'] = str(os.environ.get('PMI_SIZE', 1))
+    
+        if not 'MASTER_ADDR' in os.environ:
+            os.environ['MASTER_ADDR'] = '127.0.0.1'
+        #os.environ['MASTER_ADDR'] = '192.168.210.18'
+        os.environ['MASTER_PORT'] = '29500'
+        '''
+        if args.dist_url == "env://" and args.rank == -1:
+            args.rank = int(os.environ["RANK"])
+        '''
+        if args.dist_url == "env://" and args.world_size == -1:
+            args.world_size = int(os.environ["WORLD_SIZE"])
+            print("World size: ", args.world_size)
 
     args.distributed = args.world_size > 1 
     if args.distributed:
@@ -186,7 +191,7 @@ def main_worker(args):
 
 
     if args.ipex:
-        print("using ipex to do training.....................")
+        print("using ipex to do the model work.....................")
         '''
         if args.bf16:
             model, optimizer = ipex.optimize(model, dtype=torch.bfloat16, optimizer=optimizer, weights_prepack=False)
@@ -218,7 +223,12 @@ def main_worker(args):
             checkpoint = torch.load(args.resume)
             args.start_epoch = checkpoint['epoch']
             best_acc1 = checkpoint['best_acc1']
-            model.load_state_dict(checkpoint['state_dict'])
+            if args.distributed and args.dist_backend == 'ccl':
+                model.load_state_dict(checkpoint['state_dict'])
+            else:
+                corrected_dict = \
+                        { k.replace('module.', '') if k.startswith('module.') else k: v for k, v in checkpoint['state_dict'].items()}
+                model.load_state_dict(corrected_dict)
             optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
@@ -268,6 +278,34 @@ def main_worker(args):
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler)
+
+
+    if args.evaluate:
+        model.eval()
+        if args.ipex:
+            print("using ipex model to do inference\n")
+        else:
+            print("using offical pytorch model to do inference\n")
+        if args.ipex:
+            if args.bf16:
+                model = ipex.optimize(model, dtype=torch.bfloat16, inplace=True)
+                print("running bfloat16 evalation step\n")
+            else:
+                model = ipex.optimize(model, dtype=torch.float32, inplace=True)
+                print("running fp32 evalation step\n")
+            if args.jit:
+                x = torch.randn(args.batch_size, 3, 224, 224).contiguous(memory_format=torch.channels_last)
+                if args.bf16:
+                    x = x.to(torch.bfloat16)
+                    with torch.cpu.amp.autocast(), torch.no_grad():
+                        model = torch.jit.trace(model, x).eval()
+                else:
+                     with torch.no_grad():
+                         model = torch.jit.trace(model, x).eval()
+                model = torch.jit.freeze(model)
+        validate(val_loader, model, criterion, 0, args)
+        return
+
 
     num_steps_per_epoch = len(train_loader)
     if args.base_op.lower() == "lars":
